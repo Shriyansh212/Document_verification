@@ -174,73 +174,73 @@ def heuristic_fallback_extract(raw_text: str, doc_type_hint: str = "auto") -> di
     full_name = _match_first(
         raw_text,
         [
-            r"(?:full\s*name|account\s*holder|employee\s*name|taxpayer\s*name|holder\s*name|name)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:full\s*name|account\s*holder|employee\s*name|taxpayer\s*name|holder\s*name|name)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     document_number = _match_first(
         raw_text,
         [
-            r"(?:passport\s*(?:no|number)|license\s*(?:no|number)|id\s*(?:no|number)|document\s*(?:no|number)|pan)\s*[:\-#]\s*([A-Z0-9\-/]{4,32})",
+            r"(?:^|\n)\s*(?:passport\s*(?:no|number)|license\s*(?:no|number)|id\s*(?:no|number)|document\s*(?:no|number)|pan)\s*[:\-#]\s*([A-Z0-9\-/]{4,32})",
         ],
     )
     date_of_birth = _match_first(
         raw_text,
         [
-            r"(?:date\s*of\s*birth|dob|birth\s*date)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:date\s*of\s*birth|dob|birth\s*date)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     issue_date = _match_first(
         raw_text,
         [
-            r"(?:date\s*of\s*issue|issue\s*date|issued\s*on|statement\s*date)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:date\s*of\s*issue|issue\s*date|issued\s*on|statement\s*date)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     expiry_date = _match_first(
         raw_text,
         [
-            r"(?:date\s*of\s*expiry|expiry\s*date|expiration\s*date|valid\s*until|expires)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:date\s*of\s*expiry|expiry\s*date|expiration\s*date|valid\s*until|expires)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     issuing_authority = _match_first(
         raw_text,
         [
-            r"(?:issuing\s*authority|issued\s*by|authority)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:issuing\s*authority|issued\s*by|authority)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     country = _match_first(
         raw_text,
         [
-            r"(?:country|nationality|country\s*code)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:country|nationality|country\s*code)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     address = _match_first(
         raw_text,
         [
-            r"(?:address|residential\s*address)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:address|residential\s*address)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     institution_name = _match_first(
         raw_text,
         [
-            r"(?:bank\s*name|institution|financial\s*institution|employer\s*name|provider)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:bank\s*name|institution|financial\s*institution|employer\s*name|provider)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     account_number = _match_first(
         raw_text,
         [
-            r"(?:account\s*(?:no|number)|acct\s*(?:no|#))\s*[:\-]\s*([A-Z0-9\-\*]{4,32})",
+            r"(?:^|\n)\s*(?:account\s*(?:no|number)|acct\s*(?:no|#))\s*[:\-]\s*([A-Z0-9\-\*]{4,32})",
         ],
     )
     statement_period = _match_first(
         raw_text,
         [
-            r"(?:statement\s*period|billing\s*period|tax\s*year|period)\s*[:\-]\s*([^\n\r]+)",
+            r"(?:^|\n)\s*(?:statement\s*period|billing\s*period|tax\s*year|period)\s*[:\-]\s*([^\n\r]+)",
         ],
     )
     tax_id = _match_first(
         raw_text,
         [
-            r"(?:tax\s*id|tin|ssn|ein|pan\s*number)\s*[:\-]\s*([A-Z0-9\-]{5,24})",
+            r"(?:^|\n)\s*(?:tax\s*id|tin|ssn|ein|pan\s*number)\s*[:\-]\s*([A-Z0-9\-]{5,24})",
         ],
     )
     amount_match = re.search(

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import io
+from pathlib import Path
 import shutil
 from statistics import mean
 
@@ -31,12 +32,9 @@ def _configure_tesseract() -> None:
 
 def is_tesseract_available() -> bool:
     _configure_tesseract()
-    if shutil.which(pytesseract.pytesseract.tesseract_cmd) is None:
-        try:
-            pytesseract.get_tesseract_version()
-            return True
-        except Exception:
-            return False
+    cmd = pytesseract.pytesseract.tesseract_cmd
+    if not Path(cmd).is_file() and shutil.which(cmd) is None:
+        return False
     try:
         pytesseract.get_tesseract_version()
         return True
