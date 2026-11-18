@@ -142,7 +142,19 @@ def _detect_doc_type_heuristic(text: str, hint: str) -> str:
         return "passport"
     if "driver" in lower and ("license" in lower or "licence" in lower):
         return "drivers_license"
-    if any(k in lower for k in ("national id", "aadhaar", "pan card", "identity card", "permanent account")):
+    if any(
+        k in lower
+        for k in (
+            "national id",
+            "aadhaar",
+            "aadhar",
+            "unique identification authority",
+            "uidai",
+            "pan card",
+            "identity card",
+            "permanent account",
+        )
+    ):
         return "national_id"
     if any(k in lower for k in ("bank statement", "account summary", "closing balance", "statement period")):
         return "bank_statement"
@@ -180,7 +192,8 @@ def heuristic_fallback_extract(raw_text: str, doc_type_hint: str = "auto") -> di
     document_number = _match_first(
         raw_text,
         [
-            r"(?:^|\n)\s*(?:passport\s*(?:no|number)|license\s*(?:no|number)|id\s*(?:no|number)|document\s*(?:no|number)|pan)\s*[:\-#]\s*([A-Z0-9\-/]{4,32})",
+            r"(?:^|\n)\s*(?:passport\s*(?:no|number)|license\s*(?:no|number)|id\s*(?:no|number)|document\s*(?:no|number)|aadhaar\s*(?:no|number)?|pan)\s*[:\-#]\s*([A-Z0-9\-/ ]{4,32})",
+            r"\b(\d{4}\s+\d{4}\s+\d{4})\b",
         ],
     )
     date_of_birth = _match_first(
@@ -298,6 +311,34 @@ def heuristic_fallback_extract(raw_text: str, doc_type_hint: str = "auto") -> di
     return _normalize_payload(raw_payload, doc_type_hint)
 
 
+FALLBACK_GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+]
+
+
+def _extract_with_model(
+    client: Groq,
+    model_name: str,
+    user_prompt: str,
+    doc_type_hint: str,
+) -> ExtractionResult:
+    completion = client.chat.completions.create(
+        model=model_name,
+        temperature=0.0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    content = completion.choices[0].message.content or "{}"
+    parsed = json.loads(content)
+    normalized = _normalize_payload(parsed, doc_type_hint)
+    return ExtractionResult(fields=normalized, engine=f"groq:{model_name}")
+
+
 def extract_structured_fields(raw_text: str, doc_type_hint: str = "auto") -> ExtractionResult:
     """Extract structured identity/financial fields using Groq Llama with graceful fallback."""
     if not raw_text or not raw_text.strip():
@@ -313,30 +354,48 @@ def extract_structured_fields(raw_text: str, doc_type_hint: str = "auto") -> Ext
 
     settings = get_settings()
     if is_groq_configured():
-        try:
-            client = Groq(api_key=settings.groq_api_key)
-            user_prompt = (
-                f"Document type hint: {doc_type_hint}\n\n"
-                f"OCR TEXT:\n\"\"\"\n{raw_text[:12000]}\n\"\"\""
-            )
-            completion = client.chat.completions.create(
-                model=settings.groq_model,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-            content = completion.choices[0].message.content or "{}"
-            parsed = json.loads(content)
-            normalized = _normalize_payload(parsed, doc_type_hint)
-            return ExtractionResult(fields=normalized, engine=f"groq:{settings.groq_model}")
-        except Exception as exc:
-            logger.warning("Groq Llama extraction failed, falling back to heuristic extractor: %s", exc)
-            fallback = heuristic_fallback_extract(raw_text, doc_type_hint)
-            fallback["extraction_notes"] = f"Groq API error ({type(exc).__name__}); used fallback extractor."
-            return ExtractionResult(fields=fallback, engine="fallback_heuristic")
+        api_key = settings.groq_api_key.strip()
+        client = Groq(api_key=api_key)
+        user_prompt = (
+            f"Document type hint: {doc_type_hint}\n\n"
+            f"OCR TEXT:\n\"\"\"\n{raw_text[:12000]}\n\"\"\""
+        )
+        tried: list[str] = []
+        candidates = [
+            m
+            for m in dict.fromkeys([settings.groq_model.strip(), *FALLBACK_GROQ_MODELS])
+            if m
+        ]
+        last_error: Exception | None = None
+
+        for model_name in candidates:
+            tried.append(model_name)
+            try:
+                return _extract_with_model(client, model_name, user_prompt, doc_type_hint)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Groq model '%s' failed (%s); trying next candidate.", model_name, exc)
+                if type(exc).__name__ not in ("NotFoundError", "BadRequestError"):
+                    break
+
+        # If static candidates returned NotFoundError, dynamically discover active Llama models
+        if last_error and type(last_error).__name__ in ("NotFoundError", "BadRequestError"):
+            try:
+                listed = client.models.list()
+                for model_obj in getattr(listed, "data", []) or []:
+                    mid = getattr(model_obj, "id", "")
+                    if mid and "llama" in mid.lower() and "guard" not in mid.lower() and mid not in tried:
+                        try:
+                            return _extract_with_model(client, mid, user_prompt, doc_type_hint)
+                        except Exception as exc:
+                            last_error = exc
+            except Exception as list_exc:
+                logger.warning("Failed to list Groq models: %s", list_exc)
+
+        fallback = heuristic_fallback_extract(raw_text, doc_type_hint)
+        err_detail = f"{type(last_error).__name__}: {str(last_error)[:140]}" if last_error else "unknown"
+        fallback["extraction_notes"] = f"Groq API error ({err_detail}); used fallback extractor."
+        return ExtractionResult(fields=fallback, engine="fallback_heuristic")
 
     fallback = heuristic_fallback_extract(raw_text, doc_type_hint)
     return ExtractionResult(fields=fallback, engine="fallback_heuristic")

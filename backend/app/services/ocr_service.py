@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 from statistics import mean
 
@@ -75,25 +76,31 @@ def _preprocess_image(image: Image.Image) -> Image.Image:
     return processed
 
 
-def _run_tesseract_on_image(image: Image.Image) -> tuple[str, float]:
-    os.environ.setdefault("OMP_THREAD_LIMIT", "1")
-    _configure_tesseract()
-    processed = _preprocess_image(image)
-    config = "--oem 3 --psm 6"
-
+def _detect_osd_rotation(image: Image.Image) -> int:
+    """Detect clockwise rotation angle (0, 90, 180, 270) needed to orient text upright."""
     try:
-        # Single Tesseract pass returns both structured lines and word-level confidence
-        data = pytesseract.image_to_data(
-            processed,
-            config=config,
-            output_type=pytesseract.Output.DICT,
-            timeout=25,
-        )
-    finally:
-        processed.close()
+        osd = pytesseract.image_to_osd(image, output_type=pytesseract.Output.DICT, timeout=10)
+        rotate = int(osd.get("rotate", 0)) % 360
+        if rotate in (90, 180, 270):
+            return rotate
+    except Exception:
+        pass
+    return 0
+
+
+def _ocr_single_pass(image: Image.Image) -> tuple[str, float, float]:
+    """Run one Tesseract pass and return (text, avg_confidence, quality_score)."""
+    config = "--oem 3 --psm 6"
+    data = pytesseract.image_to_data(
+        image,
+        config=config,
+        output_type=pytesseract.Output.DICT,
+        timeout=25,
+    )
 
     lines: dict[tuple[int, int, int], list[str]] = defaultdict(list)
     confidences: list[float] = []
+    alpha_words = 0
 
     texts = data.get("text", [])
     confs = data.get("conf", [])
@@ -111,6 +118,8 @@ def _run_tesseract_on_image(image: Image.Image) -> tuple[str, float]:
             int(line_nums[idx]) if idx < len(line_nums) else 0,
         )
         lines[key].append(word)
+        if re.search(r"[A-Za-z0-9]{2,}", word):
+            alpha_words += 1
         raw_conf = str(confs[idx]) if idx < len(confs) else "-1"
         if raw_conf not in ("-1", ""):
             try:
@@ -122,7 +131,39 @@ def _run_tesseract_on_image(image: Image.Image) -> tuple[str, float]:
 
     text = "\n".join(" ".join(words) for words in lines.values()).strip()
     avg_conf = round(mean(confidences), 4) if confidences else (0.5 if text else 0.0)
-    return text, avg_conf
+    quality = avg_conf * max(alpha_words, 1)
+    return text, avg_conf, quality
+
+
+def _run_tesseract_on_image(image: Image.Image) -> tuple[str, float]:
+    os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+    _configure_tesseract()
+    processed = _preprocess_image(image)
+
+    try:
+        # Step 1: Try Tesseract OSD to auto-correct 90/180/270-degree scans
+        osd_rotate = _detect_osd_rotation(processed)
+        if osd_rotate:
+            rotated = processed.rotate(-osd_rotate, expand=True)
+            processed.close()
+            processed = rotated
+
+        best_text, best_conf, best_quality = _ocr_single_pass(processed)
+
+        # Step 2: If confidence or readable word yield is still low, test 90° and 270° rotations
+        if best_conf < 0.62 or len(re.findall(r"[A-Za-z0-9]{3,}", best_text)) < 10:
+            for angle in (90, 270):
+                candidate = processed.rotate(angle, expand=True)
+                try:
+                    c_text, c_conf, c_quality = _ocr_single_pass(candidate)
+                    if c_quality > best_quality:
+                        best_text, best_conf, best_quality = c_text, c_conf, c_quality
+                finally:
+                    candidate.close()
+
+        return best_text, best_conf
+    finally:
+        processed.close()
 
 
 def extract_text_from_file(
