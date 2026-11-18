@@ -1,5 +1,7 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
 import io
+import os
 from pathlib import Path
 import shutil
 from statistics import mean
@@ -43,17 +45,30 @@ def is_tesseract_available() -> bool:
 
 
 def _preprocess_image(image: Image.Image) -> Image.Image:
-    """Enhance image contrast and resolution before running Tesseract OCR."""
+    """Enhance image contrast and clamp dimensions for fast, low-memory Tesseract OCR."""
     processed = ImageOps.exif_transpose(image)
     if processed.mode != "L":
         processed = processed.convert("L")
 
-    # Upscale small scans to improve OCR accuracy
-    min_dim = min(processed.size)
-    if min_dim < 900:
-        scale = min(2.5, 900 / max(min_dim, 1))
-        new_size = (int(processed.width * scale), int(processed.height * scale))
-        processed = processed.resize(new_size, Image.Resampling.LANCZOS)
+    width, height = processed.size
+    max_dim = max(width, height)
+    min_dim = min(width, height)
+
+    # Cap large screenshots/scans to prevent memory spikes on constrained containers
+    max_allowed = 1600
+    if max_dim > max_allowed:
+        scale = max_allowed / max_dim
+        processed = processed.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    elif max_dim < 1000 and min_dim < 600:
+        # Gently upscale tiny crops without ever exceeding max_allowed
+        scale = min(2.0, max_allowed / max(max_dim, 1))
+        processed = processed.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
 
     processed = ImageOps.autocontrast(processed)
     processed = processed.filter(ImageFilter.SHARPEN)
@@ -61,21 +76,51 @@ def _preprocess_image(image: Image.Image) -> Image.Image:
 
 
 def _run_tesseract_on_image(image: Image.Image) -> tuple[str, float]:
+    os.environ.setdefault("OMP_THREAD_LIMIT", "1")
     _configure_tesseract()
     processed = _preprocess_image(image)
     config = "--oem 3 --psm 6"
 
-    data = pytesseract.image_to_data(
-        processed,
-        config=config,
-        output_type=pytesseract.Output.DICT,
-    )
-    confidences = [
-        float(conf) / 100.0
-        for conf, word in zip(data.get("conf", []), data.get("text", []))
-        if str(word).strip() and str(conf) not in ("-1", "")
-    ]
-    text = pytesseract.image_to_string(processed, config=config).strip()
+    try:
+        # Single Tesseract pass returns both structured lines and word-level confidence
+        data = pytesseract.image_to_data(
+            processed,
+            config=config,
+            output_type=pytesseract.Output.DICT,
+            timeout=25,
+        )
+    finally:
+        processed.close()
+
+    lines: dict[tuple[int, int, int], list[str]] = defaultdict(list)
+    confidences: list[float] = []
+
+    texts = data.get("text", [])
+    confs = data.get("conf", [])
+    blocks = data.get("block_num", [])
+    pars = data.get("par_num", [])
+    line_nums = data.get("line_num", [])
+
+    for idx, raw_word in enumerate(texts):
+        word = str(raw_word).strip()
+        if not word:
+            continue
+        key = (
+            int(blocks[idx]) if idx < len(blocks) else 0,
+            int(pars[idx]) if idx < len(pars) else 0,
+            int(line_nums[idx]) if idx < len(line_nums) else 0,
+        )
+        lines[key].append(word)
+        raw_conf = str(confs[idx]) if idx < len(confs) else "-1"
+        if raw_conf not in ("-1", ""):
+            try:
+                conf_val = float(raw_conf)
+                if conf_val >= 0:
+                    confidences.append(conf_val / 100.0)
+            except ValueError:
+                pass
+
+    text = "\n".join(" ".join(words) for words in lines.values()).strip()
     avg_conf = round(mean(confidences), 4) if confidences else (0.5 if text else 0.0)
     return text, avg_conf
 

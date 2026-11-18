@@ -71,7 +71,7 @@ def get_pipeline_stats(db: Session = Depends(get_db)):
     response_model=DocumentDetailSchema,
     status_code=status.HTTP_201_CREATED,
 )
-async def verify_uploaded_document(
+def verify_uploaded_document(
     file: UploadFile = File(...),
     doc_type: str = Form(default="auto"),
     applicant_name: str | None = Form(default=None),
@@ -88,7 +88,7 @@ async def verify_uploaded_document(
             detail=f"Unsupported file extension '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    file_bytes = await file.read()
+    file_bytes = file.file.read()
     if not file_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
     if len(file_bytes) > settings.max_file_size_bytes:

@@ -1,6 +1,9 @@
 from datetime import date
 
+from PIL import Image
+
 from app.services.decision_engine import route_decision
+from app.services.ocr_service import _preprocess_image
 from app.services.validator import validate_extracted_document
 
 
@@ -98,3 +101,14 @@ def test_missing_required_fields_trigger_fail():
     assert {"document_number", "date_of_birth", "expiry_date"}.issubset(missing_fields)
     decision = route_decision(flags, extraction_confidence=0.85, ocr_confidence=0.90)
     assert decision.decision == "FAIL"
+
+
+def test_preprocess_image_caps_dimensions_for_low_memory():
+    large = Image.new("RGB", (3200, 1800), color="white")
+    resized_large = _preprocess_image(large)
+    assert max(resized_large.size) <= 1600
+
+    wide_crop = Image.new("RGB", (1400, 350), color="white")
+    resized_crop = _preprocess_image(wide_crop)
+    assert max(resized_crop.size) <= 1600
+
